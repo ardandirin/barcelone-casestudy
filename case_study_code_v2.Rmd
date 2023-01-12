@@ -1,0 +1,348 @@
+---
+title: "Data Analysis and Visualization in R (IN2339)"
+subtitle: "Case Study"
+author: "Abdo, Arda Andirin, Denis, Hui Zheng"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, fig.show='hide'}
+## Load all the needed libraries. No need to include this in your compiled pdf document so we set echo=FALSE
+library(data.table)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(datasets)
+library(ggrepel)
+library(scales)
+
+```
+
+## Motivation
+
+All around the world, a trend towards increasing housing prices has been observable. Barcelona has been leading the list of most expensive cities in terms of price per square meter for many consecutive years now.[^1] This effect can usually be traced back and allocated to different causes: Rural exodus, Immigration, Inflation, and many more. It can be demand-driven, but also supply-driven if there is simply a lack of housing offers. The goal of this analysis is to check if disposable household income, since it can be a good indicator for the wealth of an area, and immigration (an increase in demand), are associated with rent prices in Barcelona.
+
+[^1]: https://housinganywhere.com/rent-index-by-city
+
+## Data Preparation
+
+We mainly use four data tables, including *immigrants_by_nationality.csv* and *population.csv* from the given Barcelona dataset, and disposable household income per person[^2] and average monthly rent per surface[^3] from Barcelona's City Hall Open Data Service[^4]. The data we use are all from the year 2017.
+
+
+[^2]: https://opendata-ajuntament.barcelona.cat/data/en/dataset/renda-disponible-llars-bcn, 
+
+[^3]: https://opendata-ajuntament.barcelona.cat/data/en/dataset/est-mercat-immobiliari-lloguer-mitja-mensual
+
+[^4]: https://opendata-ajuntament.barcelona.cat/
+
+First, we rename the columns, as many of them were in Catalan. Then we check for NAs in all the data tables we use. After removing NAs, we look for neighborhoods that are common in all datasets, which left us 70 neighborhoods. We take the average of the quarterly rent prices to make sure the results are in (€/m2 per month) on a yearly basis. To eliminate the influence of population size, we further divide the total number of immigrants by the total population of the neighborhood. Finally we merge all the information we need for further analysis into one data table, named *rent_immi*. Here is the first row from *rent_immi*:
+
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, fig.show='hide'}
+## Load the file(s)
+population_dt <- fread("./Barcelona/population.csv")
+immi_by_na_dt <- fread("./Barcelona/immigrants_by_nationality.csv")
+rent <- fread('./Barcelona/rent.csv')
+#income_index <- fread('./Barcelona/income_index_2017.csv')
+income <- fread('./Barcelona/income_2017.csv')
+
+#rename the column names to English
+#colnames(income_index) <- c("Year", "District Code", "District Name", "Neighborhood Code", "Neighborhood Name", "Population", "Index")
+colnames(income) <- c("Year", "District Code", "District Name", "Neighborhood Code", "Neighborhood Name", "Income")
+colnames(rent) <- c("Year", "Quarter", "District Code", "District Name", "Neighborhood Code", "Neighborhood Name", "Measurement", "Price")
+
+## Observe the first and last rows and str of the dataset(s)
+head(rent)
+str(rent)
+
+head(income)
+str(income)
+```
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, fig.show='hide'}
+#subset the rent data table, using only the Euros/m2 rent
+rent <- rent[Measurement=="Lloguer mitjà per superfície (Euros/m2 mes)"]
+
+#drop the missing values, after this step we have the rent data for 70 neighborhoods, drop 3 neighborhoods
+rent_clean <- rent %>% drop_na()
+
+#check for missing values in the data table, should be repeated for other tables
+#TODO
+immi_by_na_dt[rowSums(is.na(immi_by_na_dt))>0, ]
+
+#make sure that we also drop these 3 neighborhoods with missing value in other data tables we're gonna use
+immi_clean <- immi_by_na_dt[`Neighborhood Code` %in% unique(rent_clean$`Neighborhood Code`)]
+
+#calculate the average rent / neighborhood
+ave_rent <- distinct(rent_clean[, .(ave_rent = ave(Price)), by = `Neighborhood Code`])
+
+#calculate the number of immigrants / neighborhood
+immi_sum <- immi_clean[, .(Immigrants = sum(Number)), by = `Neighborhood Code`]
+rent_immi <- merge(ave_rent, immi_sum, by = "Neighborhood Code")
+
+#add district name to the table for further use
+district_code <- rent_clean[, .(`Neighborhood Code`, `District Name`)]
+rent_immi <- distinct(merge(rent_immi, district_code, by = "Neighborhood Code"))
+
+#calculate total population / neighborhood
+pop_clean <- population_dt[`Neighborhood.Code` %in% unique(rent_clean$`Neighborhood Code`)]
+
+rent_immi[, total_population := pop_clean[Year==2017, .(total_population = sum(Number)), by=Neighborhood.Code]$total_population ]
+
+#calculate the number of immigrants / total population
+rent_immi[, immigrants_ratio := Immigrants/total_population]
+
+#add the disposable household income to the table
+income_clean <- income[`Neighborhood Code` %in% unique(rent_clean$`Neighborhood Code`), .(`Neighborhood Code`, Income)]
+rent_immi <- merge(rent_immi, income_clean, by = "Neighborhood Code")
+
+```
+```{r}
+head(rent_immi, 1)
+```
+
+
+
+
+## Data Analysis
+
+### Barplot
+
+To gain first insights into the data, we create one barplot for the number of immigrants and total population by district. 
+
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="70%", fig.align="center"}
+dt <- melt(rent_immi, 
+           id.vars = c(1, 4),
+           measure.vars=c("total_population", "Immigrants"),
+           value.name = "Number")
+
+
+
+ggplot(data=dt, aes(x=`District Name`, y=Number, fill=variable)) +
+  geom_bar(stat="identity") + 
+  labs(x="District", y="Number of Immigrants and Total Population", title="Higher population, more immigrants") +
+  coord_flip() +
+  #theme_bw()+ 
+  scale_y_continuous(breaks=c(0, 100000, 200000, 300000), 
+                     labels=comma(abs(c(0, 100000, 200000, 300000)))) + 
+  #xlim(100000, 300000) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+From this barplot, we can observe the number of immigrants and the total population in each district of Barcelona and the relationship between them. It's clear that the higher the population of the district, the higher the number of immigrants.
+
+### Boxplot
+To obtain good graphical insights into the distribution of the data, we create two boxplots on average monthly rent per surface and average household income by district.
+
+
+
+```{r, fig.align="default", echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, fig.show="hold", out.width="50%"}
+
+
+ave_global <- ave(rent_immi$ave_rent)[1]
+median_global <- median(rent_immi$ave_rent)
+ave_income <- ave(rent_immi$Income)[1]
+
+
+ggplot(rent_immi, aes(x=`District Name`, y=ave_rent)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_x_discrete(guide = guide_axis(n.dodge=2))+
+  labs(x = "District Name", y = "Average Rent", title = "Rent Distribution by District") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_hline(yintercept = ave_global, linetype="dashed", color="red")
+
+ggplot(rent_immi, aes(x=`District Name`, y=Income)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_x_discrete(guide = guide_axis(n.dodge=2))+
+  labs(x = "District Name", y = "Average Household Income", title = "Income Distribution by District") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_hline(yintercept = ave_income, linetype="dashed", color="red")
+
+```
+
+The left figure represents that the distribution average rent (€/m2 per month) of the city of Barcelona and their relationship to the global average in the dashed red line. The average rent seems to be evenly distributed around the global average. We also observe that the three most populated districts, namely Eixample, Sant Martí, and Sants-Montjuïc are closer to the global average, which is self-evident, as they contribute more to the mean.
+
+From the right figure, we can see how the average household income in the city of Barcelona is distributed among the 10 different districts. We see that they are not as evenly distributed around the global average as the average rent.
+
+### Q-Q plot
+
+Then we further use Q-Q plots to explore the distribution of the three most important variables, namely average rent, income and immigrants ratio by neighborhood, for our further statistical testing.
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="33%", fig.align="default"}
+ggplot(data = rent_immi, aes(sample = ave_rent)) + geom_qq() + stat_qq_line() +
+  labs(title = "Average rent")+
+    theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(data = rent_immi, aes(sample = Income)) + geom_qq() + stat_qq_line() +
+  labs(title = "Income")+
+    theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(data = rent_immi, aes(sample = immigrants_ratio)) + geom_qq() + stat_qq_line() +
+  labs(title = "Immigrants ratio")+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+As we can see from the Q-Q plots, the distribution of average rent, income and immigrants ratio by neighborhood is very close to the Normal distribution, which allows us to use pearson correlation test later. An observation is that especially income and immigrants ratio have more extreme values.
+
+```{r}
+library(nortest)
+shapiro.test(rent_immi$immigrants_ratio)
+```
+
+
+## Hypotheses and testing
+
+### Income and rent
+
+Generally speaking, wealthier areas have higher rents. So our null hypothesis is that disposable household income and average rent are not correlated. Then we check for the relationship between them.
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.align="center"}
+#disposable income
+
+#income and rent, positive relation
+ggplot(rent_immi, aes(Income, ave_rent)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x="Income", y="Average Rent", title="The higher the income, the higher the average rent") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Here is an associative plot of disposable household income and average rent. We can see a positive correlation between two variables. The higher the income of a neighborhood, the higher the rent price. To see if there actually exists a correlation statistically, we apply spearman and pearson correlation tests. Here is the result of spearman correlation test.
+
+
+```{r, message=FALSE, warning=FALSE}
+cor.test(rent_immi$Income, rent_immi$ave_rent, method="spearman")$p.value
+```
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE}
+cor.test(rent_immi$Income, rent_immi$ave_rent, method="pearson")
+```
+As the p-values are quite low, we can reject the null hypothesis and say that there exists a strong correlation between disposable household income and average rent.
+
+Now we consider immigration as a confounding factor. Because we only have data for 70 neighborhoods in Barcelona, we stratify it into "Below average" and "Above average" instead of more strata to avoid contingency.
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="70%", fig.align='center'}
+#stra on immi,
+#ambiguous, spearman p=0.06, pearson p=0,03
+
+rent_immi[, immi_strata := ifelse(immigrants_ratio>=ave(immigrants_ratio), "2. Above average", "1. Below average")]
+
+ggplot(rent_immi, aes(Income, ave_rent)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x="Income", y="Average Rent", title="After stratifying on immigrants ratio, the correlation still exists") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  facet_wrap(~immi_strata)
+```
+
+After stratifying the data on immigrants ratio we can still see a correlation, with pearson test p-values of 0.03 for above-average income and 6.476e-13 for below-average income. So after controlling for the confounding variable immigration, we can reject our null hypothesis and claim that there is a positive correlation between household income and average rent.
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE}
+
+rent_new <- rent_immi[immigrants_ratio>=ave(immigrants_ratio)]
+
+cor.test(rent_new$ave_rent, rent_new$Income, method="spearman")
+cor.test(rent_new$ave_rent, rent_new$Income, method="pearson")
+```
+
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE}
+rent_new <- rent_immi[immigrants_ratio<ave(immigrants_ratio)]
+
+cor.test(rent_new$ave_rent, rent_new$Income, method="spearman")
+cor.test(rent_new$ave_rent, rent_new$Income, method="pearson")
+
+```
+
+### Immigration and rent
+
+Since immigration can lead to an increase in demand of housing market, we consider immigration as a significant variable in the housing market of Barcelona. So our null hypothesis is that immigration is not correlated to the average rent. Then we check for the relationship between immigration and average rent.
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="50%", fig.align='center'}
+
+#immi and rent
+#positive correlation
+ggplot(rent_immi, aes(immigrants_ratio, ave_rent)) +
+  geom_point() +
+  geom_smooth(method = lm)+
+  labs(x="Immigrants Ratio", y="Average Rent", title="The Higher the Immigrants Ratio, the Higher the Average Rent") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+Here is an associative plot of immigrants ratio and average rent. We can see a positive correlation between two variables. The higher the immigrants ratio, the higher the rent price. To see if there actually exists a correlation statistically, we use spearman and pearson correlation tests. Here is the result of pearson correlation test.
+
+
+```{r, message=FALSE, warning=FALSE, out.height="50%"}
+cor.test(rent_immi$immigrants_ratio, rent_immi$ave_rent, method="pearson")$p.value
+```
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+cor.test(rent_immi$immigrants_ratio, rent_immi$ave_rent, method="spearman")
+```
+
+As the p-values are quite low, we can reject the null hypothesis and say that there exists a correlation between immigration and average rent.
+
+Now we consider income as a confounding factor.
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.width="70%", fig.align='center'}
+#stra on income
+#no correlation
+
+rent_immi[, income_strata := ifelse(Income<ave(Income), "1. Below average", "2. Above average")]
+
+ggplot(rent_immi, aes(immigrants_ratio, ave_rent)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x="Immigrants Ratio", y="Average Rent", title="After stratifying on income, the correlation disappears") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~income_strata, scales="free_x")
+
+```
+
+
+```{r, echo=FALSE, results = FALSE, message=FALSE, warning=FALSE, out.height="50%"}
+rent_new <- rent_immi[Income>=ave(Income)]
+cor.test(rent_new$ave_rent, rent_new$immigrants_ratio, method="spearman")
+cor.test(rent_new$ave_rent, rent_new$immigrants_ratio, method="pearson")
+```
+
+
+```{r, message=FALSE, results = FALSE, echo=FALSE, warning=FALSE, out.height="50%"}
+rent_new <- rent_immi[Income<ave(Income)]
+cor.test(rent_new$ave_rent, rent_new$immigrants_ratio, method="spearman")
+cor.test(rent_new$ave_rent, rent_new$immigrants_ratio, method="pearson")
+```
+
+
+After stratifying the data on income, we find that for neighborhood with income above average, the p-values are 0.85 for spearman test and 0.81 for pearson test, which means that the correlation disappears. 
+
+Hence, after controlling for confounding variable income, we fail to reject our null hypothesis.
+
+
+## Conclusion 
+With the performed analysis, we find that there is a strongly positive correlation between disposable household income and average rent by neighborhood. After stratifying the data on immigrants ratio, we can still see a correlation. Then we can reject our null hypothesis and claim that there is a positive correlation between household income and average rent.
+
+Also, we find that there is a positive correlation between immigrants ratio and average rent by neighborhood. Then we check for disposable household income as a confounding factor. However, after stratifying on income, we find that for neighborhoods with income above average, the correlation disappears. Hence, we fail to prove our claim that immigration is a significant variable in the housing market of Barcelona.
+
+In conclusion, looking back at our initial motivation, we can establish that disposable income is correlated with the average rent prices while immigration ratio is not.
+
+## Version control (will be deleted)
+v1, 2022-01-19, add 1 Q-Q plot, footnotes, proofread, Hui 
+
+v2, 2022-01-20, line 116 neighborhoods->district, line 172(district names corrected) , small grammatical details, line 193 last sentence, line335 ,qqplot titles, proofread Arda, 
+
+v3, ..., add name,
